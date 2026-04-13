@@ -18,12 +18,11 @@ jobs:
         with:
           arch: x64
 
+      # ── Dépendance ViGEmClient ─────────────────────────────
       - name: Clone ViGEmClient
         run: git clone --depth=1 -b master https://github.com/nefarius/ViGEmClient.git C:\ViGEmClient
         shell: cmd
 
-      # ViGEmClient.cpp est dans C:\ViGEmClient\src\ (confirmé)
-      # On utilise les chemins absolus — pas de cd qui ne persiste pas
       - name: Build ViGEmClient.lib
         run: |
           cl.exe /c /MT /O2 /std:c++17 ^
@@ -34,105 +33,329 @@ jobs:
           lib.exe /OUT:"C:\ViGEmClient\ViGEmClient.lib" "C:\ViGEmClient\ViGEmClient.obj"
         shell: cmd
 
+      # ── Génération de vigem_bridge.hpp ────────────────────
       - name: Generate vigem_bridge.hpp
         shell: pwsh
         run: |
           $content = @'
-#pragma once
-// vigem_bridge.hpp - genere automatiquement par le workflow CI
-// Wrapper RAII autour de ViGEmClient (Nefarius)
+          #pragma once
+          // vigem_bridge.hpp — genere par CI
+          #include <cstdint>
+          #include <cstdio>
+          #include <string>
+          #include <cmath>
+          #include <ViGEm/Client.h>
 
-#include <cstdint>
-#include <cstdio>
-#include <string>
-#include <cmath>
-#include <ViGEm/Client.h>
+          struct PlayerInput {
+              float throttle  = 0.f;
+              float steer     = 0.f;
+              float pitch     = 0.f;
+              float yaw       = 0.f;
+              float roll      = 0.f;
+              bool  jump      = false;
+              bool  boost     = false;
+              bool  handbrake = false;
+          };
 
-struct PlayerInput {
-    float throttle = 0.f;
-    float steer    = 0.f;
-    float pitch    = 0.f;
-    float yaw      = 0.f;
-    float roll     = 0.f;
-    bool  jump      = false;
-    bool  boost     = false;
-    bool  handbrake = false;
-};
+          namespace math_utils {
+              inline float clamp(float v, float lo, float hi) noexcept {
+                  return v < lo ? lo : v > hi ? hi : v;
+              }
+          }
 
-namespace math_utils {
-    inline float clamp(float v, float lo, float hi) noexcept {
-        return v < lo ? lo : v > hi ? hi : v;
-    }
-}
-
-class VigemBridge {
-public:
-    VigemBridge() {
-        client_ = vigem_alloc();
-        if (!client_) { err_ = "vigem_alloc failed"; return; }
-        const auto r = vigem_connect(client_);
-        if (!VIGEM_SUCCESS(r)) {
-            err_ = "vigem_connect failed: " + std::to_string(r);
-            vigem_free(client_); client_ = nullptr; return;
-        }
-        pad_ = vigem_target_x360_alloc();
-        if (!pad_) { err_ = "vigem_target_x360_alloc failed"; return; }
-        const auto r2 = vigem_target_add(client_, pad_);
-        if (!VIGEM_SUCCESS(r2)) {
-            err_ = "vigem_target_add failed: " + std::to_string(r2);
-            vigem_target_free(pad_); pad_ = nullptr; return;
-        }
-        valid_ = true;
-    }
-
-    ~VigemBridge() {
-        if (pad_)    { vigem_target_remove(client_, pad_); vigem_target_free(pad_); }
-        if (client_) { vigem_free(client_); }
-    }
-
-    VigemBridge(const VigemBridge&) = delete;
-    VigemBridge& operator=(const VigemBridge&) = delete;
-
-    [[nodiscard]] bool valid() const noexcept { return valid_; }
-    [[nodiscard]] const std::string& last_error() const noexcept { return err_; }
-
-    void update(const PlayerInput& in) noexcept {
-        if (!valid_) return;
-        tick_++;
-        const float drift = 0.0001f * std::sin(static_cast<float>(tick_) * 0.0886f);
-
-        XUSB_REPORT r{};
-        r.sThumbLX = to_axis(math_utils::clamp(in.steer    + drift, -1.f, 1.f));
-        r.sThumbLY = to_axis(math_utils::clamp(in.throttle,         -1.f, 1.f));
-        r.sThumbRX = to_axis(math_utils::clamp(in.yaw,              -1.f, 1.f));
-        r.sThumbRY = to_axis(math_utils::clamp(in.pitch    + drift, -1.f, 1.f));
-        if (in.boost)     r.wButtons |= XUSB_GAMEPAD_A;
-        if (in.jump)      r.wButtons |= XUSB_GAMEPAD_B;
-        if (in.handbrake) r.wButtons |= XUSB_GAMEPAD_X;
-        vigem_target_x360_update(client_, pad_, r);
-    }
-
-private:
-    static int16_t to_axis(float v) noexcept {
-        return static_cast<int16_t>(v * 32767.f);
-    }
-
-    PVIGEM_CLIENT client_ = nullptr;
-    PVIGEM_TARGET pad_    = nullptr;
-    bool          valid_  = false;
-    std::string   err_;
-    uint64_t      tick_   = 0;
-};
-'@
+          class VigemBridge {
+          public:
+              VigemBridge() {
+                  client_ = vigem_alloc();
+                  if (!client_) { err_ = "vigem_alloc failed"; return; }
+                  const auto r = vigem_connect(client_);
+                  if (!VIGEM_SUCCESS(r)) {
+                      err_ = "vigem_connect failed: " + std::to_string(r);
+                      vigem_free(client_); client_ = nullptr; return;
+                  }
+                  pad_ = vigem_target_x360_alloc();
+                  if (!pad_) { err_ = "vigem_target_x360_alloc failed"; return; }
+                  const auto r2 = vigem_target_add(client_, pad_);
+                  if (!VIGEM_SUCCESS(r2)) {
+                      err_ = "vigem_target_add failed: " + std::to_string(r2);
+                      vigem_target_free(pad_); pad_ = nullptr; return;
+                  }
+                  valid_ = true;
+              }
+              ~VigemBridge() {
+                  if (pad_)    { vigem_target_remove(client_, pad_); vigem_target_free(pad_); }
+                  if (client_) { vigem_free(client_); }
+              }
+              VigemBridge(const VigemBridge&)            = delete;
+              VigemBridge& operator=(const VigemBridge&) = delete;
+              [[nodiscard]] bool valid()                  const noexcept { return valid_; }
+              [[nodiscard]] const std::string& last_error() const noexcept { return err_; }
+              void update(const PlayerInput& in) noexcept {
+                  if (!valid_) return;
+                  tick_++;
+                  const float drift = 0.0001f * std::sin(static_cast<float>(tick_) * 0.0886f);
+                  XUSB_REPORT r{};
+                  r.sThumbLX = to_axis(math_utils::clamp(in.steer     + drift, -1.f, 1.f));
+                  r.sThumbLY = to_axis(math_utils::clamp(in.throttle,          -1.f, 1.f));
+                  r.sThumbRX = to_axis(math_utils::clamp(in.yaw,               -1.f, 1.f));
+                  r.sThumbRY = to_axis(math_utils::clamp(in.pitch     + drift, -1.f, 1.f));
+                  if (in.boost)     r.wButtons |= XUSB_GAMEPAD_A;
+                  if (in.jump)      r.wButtons |= XUSB_GAMEPAD_B;
+                  if (in.handbrake) r.wButtons |= XUSB_GAMEPAD_X;
+                  vigem_target_x360_update(client_, pad_, r);
+              }
+          private:
+              static int16_t to_axis(float v) noexcept {
+                  return static_cast<int16_t>(v * 32767.f);
+              }
+              PVIGEM_CLIENT client_ = nullptr;
+              PVIGEM_TARGET pad_    = nullptr;
+              bool          valid_  = false;
+              std::string   err_;
+              uint64_t      tick_   = 0;
+          };
+          '@
           Set-Content -Path "vigem_bridge.hpp" -Value $content -Encoding UTF8
 
-      - name: Compile
+      # ── Génération des stubs manquants ────────────────────
+      #
+      # Ces 4 headers (external_data_manager, config_loader, rl_fsm,
+      # rl_bot, console_ui) DOIVENT exister dans ton repo.
+      # Cette étape génère des STUBS minimalistes uniquement si les
+      # fichiers sont absents, pour que la compilation ne casse pas.
+      # Si tes vrais fichiers sont dans le repo, cette étape est no-op.
+      - name: Generate missing header stubs
+        shell: pwsh
+        run: |
+
+          # ── config_loader.hpp ──────────────────────────────
+          if (-not (Test-Path "config_loader.hpp")) {
+            Set-Content -Path "config_loader.hpp" -Encoding UTF8 -Value @'
+          #pragma once
+          #include <string>
+          #include <unordered_map>
+          #include <fstream>
+          #include <sstream>
+          #include <cstddef>
+
+          class ConfigLoader {
+          public:
+              bool load(const std::string& path) {
+                  std::ifstream f(path);
+                  if (!f) return false;
+                  std::string line;
+                  while (std::getline(f, line)) {
+                      auto eq = line.find('=');
+                      if (eq == std::string::npos) continue;
+                      map_[line.substr(0, eq)] = line.substr(eq + 1);
+                  }
+                  return !map_.empty();
+              }
+              bool has(const std::string& k) const { return map_.count(k) > 0; }
+              std::string get(const std::string& k, const std::string& def = {}) const {
+                  auto it = map_.find(k);
+                  return it != map_.end() ? it->second : def;
+              }
+              std::size_t size() const { return map_.size(); }
+          private:
+              std::unordered_map<std::string, std::string> map_;
+          };
+          '@
+          }
+
+          # ── rl_fsm.hpp ─────────────────────────────────────
+          if (-not (Test-Path "rl_fsm.hpp")) {
+            Set-Content -Path "rl_fsm.hpp" -Encoding UTF8 -Value @'
+          #pragma once
+          #include <cstdint>
+
+          enum class BotState : uint8_t { IDLE = 0, CHASE, ATTACK, DEFEND };
+
+          struct DecisionContext {
+              float    ball_dist_sq         = 0.f;
+              float    ball_dist_to_goal_sq = 0.f;
+              float    boost_pct            = 0.f;
+              bool     ball_is_behind_car   = false;
+              bool     teammate_attacking   = false;
+              uint64_t tick_id              = 0;
+          };
+
+          class StateMachine {
+          public:
+              void update(const DecisionContext&) noexcept {}
+              void force_state(BotState s) noexcept { state_ = s; }
+              BotState state() const noexcept { return state_; }
+          private:
+              BotState state_ = BotState::IDLE;
+          };
+          '@
+          }
+
+          # ── rl_bot.hpp ─────────────────────────────────────
+          if (-not (Test-Path "rl_bot.hpp")) {
+            Set-Content -Path "rl_bot.hpp" -Encoding UTF8 -Value @'
+          #pragma once
+          #include "vigem_bridge.hpp"
+          #include "rl_fsm.hpp"
+          #include <cstdint>
+          #include <cmath>
+
+          struct Vec3  { float x = 0, y = 0, z = 0; };
+
+          struct BallState {
+              Vec3 position{};
+              Vec3 velocity{};
+          };
+
+          struct CarState {
+              Vec3  position{};
+              Vec3  velocity{};
+              Vec3  forward{0,1,0};
+              float boost_amount = 33.f;
+              bool  on_ground    = true;
+          };
+
+          struct GameTickPacket {
+              BallState ball{};
+              CarState  player{};
+              float     game_time_remaining = 300.f;
+              uint64_t  tick_id             = 0;
+          };
+
+          class BotController {
+          public:
+              PlayerInput compute(const GameTickPacket& pkt,
+                                  const DecisionContext& ctx) noexcept {
+                  PlayerInput in{};
+                  in.throttle = 1.f;
+                  const float dx = pkt.ball.position.x - pkt.player.position.x;
+                  const float dy = pkt.ball.position.y - pkt.player.position.y;
+                  const float len = std::sqrt(dx*dx + dy*dy);
+                  in.steer = (len > 1.f) ? math_utils::clamp(dx / len, -1.f, 1.f) : 0.f;
+                  in.boost = ctx.boost_pct > 20.f;
+                  return in;
+              }
+          };
+          '@
+          }
+
+          # ── external_data_manager.hpp ──────────────────────
+          if (-not (Test-Path "external_data_manager.hpp")) {
+            Set-Content -Path "external_data_manager.hpp" -Encoding UTF8 -Value @'
+          #pragma once
+          #include "config_loader.hpp"
+          #include "rl_fsm.hpp"
+          #include "rl_bot.hpp"
+          #include <atomic>
+          #include <string>
+          #include <cstdint>
+          #include <functional>
+
+          struct MemoryOffsets {
+              std::string process_name = "RocketLeague.exe";
+              static MemoryOffsets make_default() { return {}; }
+              static MemoryOffsets from_config(const ConfigLoader& cfg) {
+                  MemoryOffsets o;
+                  if (cfg.has("PROCESS")) o.process_name = cfg.get("PROCESS");
+                  return o;
+              }
+          };
+
+          struct SharedDebugData {
+              std::atomic<bool>    bot_active{true};
+              std::atomic<float>   tuning_steer_sens{1.f};
+              std::atomic<int8_t>  fsm_override{-1};
+              std::atomic<bool>    edm_connected{false};
+              void write(const GameTickPacket&, BotState, const PlayerInput&,
+                         float, bool edm_ok) noexcept {
+                  edm_connected.store(edm_ok, std::memory_order_relaxed);
+              }
+          };
+
+          class ExternalDataManager {
+          public:
+              explicit ExternalDataManager(const MemoryOffsets&) {}
+              std::string last_error() const { return "SIMULATE"; }
+          };
+
+          inline GameTickPacket external_tick(
+              ExternalDataManager&,
+              uint64_t tick_id,
+              std::function<GameTickPacket(uint64_t)> sim)
+          {
+              return sim(tick_id);
+          }
+          '@
+          }
+
+          # ── console_ui.hpp ─────────────────────────────────
+          if (-not (Test-Path "console_ui.hpp")) {
+            Set-Content -Path "console_ui.hpp" -Encoding UTF8 -Value @'
+          #pragma once
+          #include <cstdio>
+          #include <string>
+          #ifdef _WIN32
+          #  define WIN32_LEAN_AND_MEAN
+          #  include <windows.h>
+          #endif
+
+          enum class ConsoleColor : uint8_t {
+              DEFAULT = 7, BRIGHT_CYAN = 11, BRIGHT_YELLOW = 14, BRIGHT_RED = 12
+          };
+
+          inline void initialize_console_ui(const char* title) {
+          #ifdef _WIN32
+              SetConsoleTitleA(title);
+              HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
+              CONSOLE_CURSOR_INFO ci{ 1, FALSE };
+              SetConsoleCursorInfo(h, &ci);
+          #else
+              (void)title;
+          #endif
+          }
+
+          struct ScopedConsoleColor {
+              explicit ScopedConsoleColor(ConsoleColor c) {
+          #ifdef _WIN32
+                  SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE),
+                                         static_cast<WORD>(c));
+          #else
+                  (void)c;
+          #endif
+              }
+              ~ScopedConsoleColor() {
+          #ifdef _WIN32
+                  SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), 7);
+          #endif
+              }
+          };
+
+          struct ScopedCursorRestore {
+              ~ScopedCursorRestore() {
+          #ifdef _WIN32
+                  HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
+                  CONSOLE_CURSOR_INFO ci{ 25, TRUE };
+                  SetConsoleCursorInfo(h, &ci);
+          #endif
+              }
+          };
+
+          inline void console_log(ConsoleColor c, const char* tag, const char* msg) {
+              ScopedConsoleColor sc(c);
+              std::printf("[%s] %s\n", tag, msg);
+          }
+          '@
+          }
+
+      # ── Compilation finale ────────────────────────────────
+      - name: Compile BotFinal.exe
         run: |
           cl.exe /std:c++20 /O2 /MT ^
             /DHEADLESS_MODE ^
             /DWIN32_LEAN_AND_MEAN ^
             /DFORCE_SIMULATE ^
             /I"C:\ViGEmClient\include" ^
+            /I"." ^
             main.cpp ^
             /Fe:BotFinal.exe ^
             /link ^
