@@ -14,40 +14,149 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 2. vcpkg via l'action officielle
-      - name: Setup vcpkg
-        uses: lukka/run-vcpkg@v11
-        with:
-          vcpkgGitCommitId: 'a42af01b72c28a8e1d7b48107b33e4f286a55ef6'
-
-      # 3. Install ViGEmClient — syntaxe pwsh corrigée avec & operator
-      - name: Install ViGEmClient
-        run: |
-          $vcpkg = Join-Path $env:VCPKG_ROOT "vcpkg.exe"
-          & $vcpkg install vigemclient:x64-windows-static
-        shell: pwsh
-
-      # 4. Setup MSVC (cl.exe)
+      # 2. Setup MSVC (cl.exe)
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
 
-      # 5. Compilation Release avec cl.exe
+      # 3. Clone ViGEmClient directement depuis GitHub (pas de vcpkg)
+      #    Le repo officiel Nefarius contient les headers ET ViGEmClient.lib précompilée
+      - name: Clone ViGEmClient
+        run: |
+          git clone --depth=1 https://github.com/nefarius/ViGEmClient.git C:\ViGEmClient
+        shell: cmd
+
+      # 4. Build de ViGEmClient.lib depuis les sources
+      #    (au cas où la lib précompilée ne match pas le runtime /MT)
+      - name: Build ViGEmClient.lib
+        run: |
+          cd C:\ViGEmClient
+          cl.exe /c /MT /O2 /std:c++17 ^
+            /DWIN32_LEAN_AND_MEAN ^
+            /I"include" ^
+            src\ViGEmClient.cpp ^
+            /Fo:ViGEmClient.obj
+          lib.exe /OUT:ViGEmClient.lib ViGEmClient.obj
+        shell: cmd
+
+      # 5. Génération de vigem_bridge.hpp
+      #    Ce fichier n'est pas dans le repo — on le crée ici à partir
+      #    des headers officiels ViGEmClient (ViGEm/Client.h)
+      - name: Generate vigem_bridge.hpp
+        run: |
+          @echo off
+          (
+            echo #pragma once
+            echo // vigem_bridge.hpp — genere automatiquement par le workflow CI
+            echo // Wrapper RAII autour de ViGEmClient ^(Nefarius^)
+            echo // Simule un contr leur Xbox 360 virtuel ^(ViGEmBus^)
+            echo.
+            echo #include ^<cstdint^>
+            echo #include ^<cstdio^>
+            echo #include ^<string^>
+            echo #include ^<cmath^>
+            echo #include ^<ViGEm/Client.h^>
+            echo.
+            echo // Structure repr sentant les commandes envoy es au contr leur
+            echo struct PlayerInput {
+            echo     float throttle = 0.f;
+            echo     float steer    = 0.f;
+            echo     float pitch    = 0.f;
+            echo     float yaw      = 0.f;
+            echo     float roll     = 0.f;
+            echo     bool  jump     = false;
+            echo     bool  boost    = false;
+            echo     bool  handbrake= false;
+            echo };
+            echo.
+            echo namespace math_utils {
+            echo     inline float clamp^(float v, float lo, float hi^) noexcept {
+            echo         return v ^< lo ? lo : v ^> hi ? hi : v;
+            echo     }
+            echo }
+            echo.
+            echo class VigemBridge {
+            echo public:
+            echo     VigemBridge^(^) {
+            echo         client_ = vigem_alloc^(^);
+            echo         if ^(!client_^) { err_ = "vigem_alloc failed"; return; }
+            echo         const auto r = vigem_connect^(client_^);
+            echo         if ^(!VIGEM_SUCCESS^(r^)^) {
+            echo             err_ = "vigem_connect failed: " + std::to_string^(r^);
+            echo             vigem_free^(client_^); client_ = nullptr; return;
+            echo         }
+            echo         pad_ = vigem_target_x360_alloc^(^);
+            echo         if ^(!pad_^) { err_ = "vigem_target_x360_alloc failed"; return; }
+            echo         const auto r2 = vigem_target_add^(client_, pad_^);
+            echo         if ^(!VIGEM_SUCCESS^(r2^)^) {
+            echo             err_ = "vigem_target_add failed: " + std::to_string^(r2^);
+            echo             vigem_target_free^(pad_^); pad_ = nullptr; return;
+            echo         }
+            echo         valid_ = true;
+            echo     }
+            echo.
+            echo     ~VigemBridge^(^) {
+            echo         if ^(pad_^)    { vigem_target_remove^(client_, pad_^); vigem_target_free^(pad_^); }
+            echo         if ^(client_^) { vigem_free^(client_^); }
+            echo     }
+            echo.
+            echo     VigemBridge^(const VigemBridge^^) = delete;
+            echo     VigemBridge^& operator=^(const VigemBridge^^) = delete;
+            echo.
+            echo     [[nodiscard]] bool valid^(^) const noexcept { return valid_; }
+            echo     [[nodiscard]] const std::string^& last_error^(^) const noexcept { return err_; }
+            echo.
+            echo     void update^(const PlayerInput^& in^) noexcept {
+            echo         if ^(!valid_^) return;
+            echo         tick_++;
+            echo         // D rive analogique simul e +-0.01%% @ 1.7 Hz
+            echo         const float drift = 0.0001f * std::sin^(static_cast^<float^>^(tick_^) * 0.0886f^);
+            echo.
+            echo         XUSB_REPORT r{};
+            echo         r.sThumbLX = to_axis^(math_utils::clamp^(in.steer + drift, -1.f, 1.f^)^);
+            echo         r.sThumbLY = to_axis^(math_utils::clamp^(in.throttle,      -1.f, 1.f^)^);
+            echo         r.sThumbRX = to_axis^(math_utils::clamp^(in.yaw,           -1.f, 1.f^)^);
+            echo         r.sThumbRY = to_axis^(math_utils::clamp^(in.pitch + drift, -1.f, 1.f^)^);
+            echo         if ^(in.boost^)     r.wButtons ^|= XUSB_GAMEPAD_A;
+            echo         if ^(in.jump^)      r.wButtons ^|= XUSB_GAMEPAD_B;
+            echo         if ^(in.handbrake^) r.wButtons ^|= XUSB_GAMEPAD_X;
+            echo         vigem_target_x360_update^(client_, pad_, r^);
+            echo     }
+            echo.
+            echo private:
+            echo     static int16_t to_axis^(float v^) noexcept {
+            echo         return static_cast^<int16_t^>^(v * 32767.f^);
+            echo     }
+            echo.
+            echo     PVIGEM_CLIENT client_ = nullptr;
+            echo     PVIGEM_TARGET pad_    = nullptr;
+            echo     bool          valid_  = false;
+            echo     std::string   err_;
+            echo     uint64_t      tick_   = 0;
+            echo };
+          ) > vigem_bridge.hpp
+        shell: cmd
+
+      # 6. Compilation MSVC — HEADLESS_MODE (pas d'ImGui)
+      #    Statique /MT, C++20, toutes les libs Windows nécessaires
       - name: Compile
         run: |
-          $VCPKG    = Join-Path $env:VCPKG_ROOT "installed\x64-windows-static"
-          $INCLUDES = "/I`"$VCPKG\include`""
-          $LIBS     = "`"$VCPKG\lib\ViGEmClient.lib`" psapi.lib setupapi.lib ole32.lib"
-          $SOURCES  = "main.cpp imgui.cpp imgui_draw.cpp imgui_tables.cpp imgui_widgets.cpp"
+          cl.exe /std:c++20 /O2 /MT ^
+            /DHEADLESS_MODE ^
+            /DWIN32_LEAN_AND_MEAN ^
+            /DFORCE_SIMULATE ^
+            /I"C:\ViGEmClient\include" ^
+            main.cpp ^
+            /Fe:BotFinal.exe ^
+            /link ^
+            C:\ViGEmClient\ViGEmClient.lib ^
+            psapi.lib ^
+            setupapi.lib ^
+            ole32.lib
+        shell: cmd
 
-          $cmd = "cl.exe /std:c++20 /O2 /DHEADLESS_MODE /DWIN32_LEAN_AND_MEAN /MT " `
-               + "$INCLUDES $SOURCES /Fe:BotFinal.exe /link $LIBS"
-          Invoke-Expression $cmd
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-        shell: pwsh
-
-      # 6. Upload artifact
+      # 7. Upload artifact
       - name: Upload BotFinal.exe
         uses: actions/upload-artifact@v4
         with:
