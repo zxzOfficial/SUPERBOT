@@ -14,40 +14,40 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 2. vcpkg + ViGEmClient via l'action officielle (fiable)
+      # 2. vcpkg via l'action officielle
       - name: Setup vcpkg
         uses: lukka/run-vcpkg@v11
         with:
           vcpkgGitCommitId: 'a42af01b72c28a8e1d7b48107b33e4f286a55ef6'
 
+      # 3. Install ViGEmClient — syntaxe pwsh corrigée avec & operator
       - name: Install ViGEmClient
         run: |
-          $env:VCPKG_ROOT\vcpkg.exe install vigemclient:x64-windows-static
+          $vcpkg = Join-Path $env:VCPKG_ROOT "vcpkg.exe"
+          & $vcpkg install vigemclient:x64-windows-static
         shell: pwsh
 
-      # 3. Setup MSVC (cl.exe)
+      # 4. Setup MSVC (cl.exe)
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
 
-      # 4. Compilation Release avec cl.exe (MSVC)
+      # 5. Compilation Release avec cl.exe
       - name: Compile
         run: |
-          $VCPKG = "$env:VCPKG_ROOT\installed\x64-windows-static"
+          $VCPKG    = Join-Path $env:VCPKG_ROOT "installed\x64-windows-static"
           $INCLUDES = "/I`"$VCPKG\include`""
           $LIBS     = "`"$VCPKG\lib\ViGEmClient.lib`" psapi.lib setupapi.lib ole32.lib"
           $SOURCES  = "main.cpp imgui.cpp imgui_draw.cpp imgui_tables.cpp imgui_widgets.cpp"
 
-          cl.exe /std:c++20 /O2 /DHEADLESS_MODE /DWIN32_LEAN_AND_MEAN `
-                 /MT `
-                 $INCLUDES `
-                 $SOURCES `
-                 /Fe:BotFinal.exe `
-                 /link $LIBS
+          $cmd = "cl.exe /std:c++20 /O2 /DHEADLESS_MODE /DWIN32_LEAN_AND_MEAN /MT " `
+               + "$INCLUDES $SOURCES /Fe:BotFinal.exe /link $LIBS"
+          Invoke-Expression $cmd
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         shell: pwsh
 
-      # 5. Upload artifact
+      # 6. Upload artifact
       - name: Upload BotFinal.exe
         uses: actions/upload-artifact@v4
         with:
