@@ -1,0 +1,30 @@
+# ──────────────────────────────────────────────
+# RLTool v6 — config.txt
+# Calibré avec Cheat Engine sur la version cible
+# ──────────────────────────────────────────────
+
+# Nom exact du processus cible (sensible à la casse sur Windows)
+# PROCESS_NAME=RocketLeague.exe
+
+# ── Offsets balle ──────────────────────────────
+BALL_PTR=0x02A4B0E0
+BALL_POS=0x7C
+BALL_VEL=0x88
+BALL_ANG_VEL=0x94
+BALL_ROT=0xA0
+
+# ── Offsets voiture ────────────────────────────
+CAR_PTR=0x02A4C1F0
+CAR_POS=0x7C
+CAR_VEL=0x88
+CAR_ROT=0xA0
+CAR_BOOST=0x1A8
+CAR_GROUNDED=0x1B0
+
+# ── Temps de jeu restant ───────────────────────
+TIME_PTR=0x02A50000
+TIME_FIELD=0x10
+
+# ── Paramètres optionnels ──────────────────────
+# SCALE=1.0
+# TICK_HZ=120
