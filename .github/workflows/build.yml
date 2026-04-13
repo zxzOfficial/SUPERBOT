@@ -10,136 +10,122 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      # 1. Checkout du code source
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 2. Setup MSVC (cl.exe)
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
 
-      # 3. Clone ViGEmClient — branche master EXPLICITE
-      #    Le repo Nefarius est archivé sur "master" (pas "main")
-      #    src/ViGEmClient.cpp existe sur master uniquement
       - name: Clone ViGEmClient
         run: git clone --depth=1 -b master https://github.com/nefarius/ViGEmClient.git C:\ViGEmClient
         shell: cmd
 
-      # 4. Vérification (debug CI — peut être supprimé après succès)
-      - name: Verify ViGEmClient source
-        run: dir C:\ViGEmClient\src\
-        shell: cmd
-
-      # 5. Build de ViGEmClient.lib depuis les sources officielles
-      #    /MT obligatoire pour matcher le runtime statique de main.cpp
+      # ViGEmClient.cpp est dans C:\ViGEmClient\src\ (confirmé)
+      # On utilise les chemins absolus — pas de cd qui ne persiste pas
       - name: Build ViGEmClient.lib
         run: |
-          cd C:\ViGEmClient
           cl.exe /c /MT /O2 /std:c++17 ^
             /DWIN32_LEAN_AND_MEAN ^
-            /I"include" ^
-            "src\ViGEmClient.cpp" ^
-            /Fo:ViGEmClient.obj
-          lib.exe /OUT:ViGEmClient.lib ViGEmClient.obj
+            /I"C:\ViGEmClient\include" ^
+            "C:\ViGEmClient\src\ViGEmClient.cpp" ^
+            /Fo:"C:\ViGEmClient\ViGEmClient.obj"
+          lib.exe /OUT:"C:\ViGEmClient\ViGEmClient.lib" "C:\ViGEmClient\ViGEmClient.obj"
         shell: cmd
 
-      # 6. Génération de vigem_bridge.hpp dans le dossier du projet
-      #    Ce fichier est inclus par main.cpp mais absent du repo
       - name: Generate vigem_bridge.hpp
         shell: pwsh
         run: |
           $content = @'
-          #pragma once
-          // vigem_bridge.hpp - genere automatiquement par le workflow CI
-          // Wrapper RAII autour de ViGEmClient (Nefarius)
+#pragma once
+// vigem_bridge.hpp - genere automatiquement par le workflow CI
+// Wrapper RAII autour de ViGEmClient (Nefarius)
 
-          #include <cstdint>
-          #include <cstdio>
-          #include <string>
-          #include <cmath>
-          #include <ViGEm/Client.h>
+#include <cstdint>
+#include <cstdio>
+#include <string>
+#include <cmath>
+#include <ViGEm/Client.h>
 
-          struct PlayerInput {
-              float throttle = 0.f;
-              float steer    = 0.f;
-              float pitch    = 0.f;
-              float yaw      = 0.f;
-              float roll     = 0.f;
-              bool  jump      = false;
-              bool  boost     = false;
-              bool  handbrake = false;
-          };
+struct PlayerInput {
+    float throttle = 0.f;
+    float steer    = 0.f;
+    float pitch    = 0.f;
+    float yaw      = 0.f;
+    float roll     = 0.f;
+    bool  jump      = false;
+    bool  boost     = false;
+    bool  handbrake = false;
+};
 
-          namespace math_utils {
-              inline float clamp(float v, float lo, float hi) noexcept {
-                  return v < lo ? lo : v > hi ? hi : v;
-              }
-          }
+namespace math_utils {
+    inline float clamp(float v, float lo, float hi) noexcept {
+        return v < lo ? lo : v > hi ? hi : v;
+    }
+}
 
-          class VigemBridge {
-          public:
-              VigemBridge() {
-                  client_ = vigem_alloc();
-                  if (!client_) { err_ = "vigem_alloc failed"; return; }
-                  const auto r = vigem_connect(client_);
-                  if (!VIGEM_SUCCESS(r)) {
-                      err_ = "vigem_connect failed: " + std::to_string(r);
-                      vigem_free(client_); client_ = nullptr; return;
-                  }
-                  pad_ = vigem_target_x360_alloc();
-                  if (!pad_) { err_ = "vigem_target_x360_alloc failed"; return; }
-                  const auto r2 = vigem_target_add(client_, pad_);
-                  if (!VIGEM_SUCCESS(r2)) {
-                      err_ = "vigem_target_add failed: " + std::to_string(r2);
-                      vigem_target_free(pad_); pad_ = nullptr; return;
-                  }
-                  valid_ = true;
-              }
+class VigemBridge {
+public:
+    VigemBridge() {
+        client_ = vigem_alloc();
+        if (!client_) { err_ = "vigem_alloc failed"; return; }
+        const auto r = vigem_connect(client_);
+        if (!VIGEM_SUCCESS(r)) {
+            err_ = "vigem_connect failed: " + std::to_string(r);
+            vigem_free(client_); client_ = nullptr; return;
+        }
+        pad_ = vigem_target_x360_alloc();
+        if (!pad_) { err_ = "vigem_target_x360_alloc failed"; return; }
+        const auto r2 = vigem_target_add(client_, pad_);
+        if (!VIGEM_SUCCESS(r2)) {
+            err_ = "vigem_target_add failed: " + std::to_string(r2);
+            vigem_target_free(pad_); pad_ = nullptr; return;
+        }
+        valid_ = true;
+    }
 
-              ~VigemBridge() {
-                  if (pad_)    { vigem_target_remove(client_, pad_); vigem_target_free(pad_); }
-                  if (client_) { vigem_free(client_); }
-              }
+    ~VigemBridge() {
+        if (pad_)    { vigem_target_remove(client_, pad_); vigem_target_free(pad_); }
+        if (client_) { vigem_free(client_); }
+    }
 
-              VigemBridge(const VigemBridge&) = delete;
-              VigemBridge& operator=(const VigemBridge&) = delete;
+    VigemBridge(const VigemBridge&) = delete;
+    VigemBridge& operator=(const VigemBridge&) = delete;
 
-              [[nodiscard]] bool valid() const noexcept { return valid_; }
-              [[nodiscard]] const std::string& last_error() const noexcept { return err_; }
+    [[nodiscard]] bool valid() const noexcept { return valid_; }
+    [[nodiscard]] const std::string& last_error() const noexcept { return err_; }
 
-              void update(const PlayerInput& in) noexcept {
-                  if (!valid_) return;
-                  tick_++;
-                  const float drift = 0.0001f * std::sin(static_cast<float>(tick_) * 0.0886f);
+    void update(const PlayerInput& in) noexcept {
+        if (!valid_) return;
+        tick_++;
+        const float drift = 0.0001f * std::sin(static_cast<float>(tick_) * 0.0886f);
 
-                  XUSB_REPORT r{};
-                  r.sThumbLX = to_axis(math_utils::clamp(in.steer    + drift, -1.f, 1.f));
-                  r.sThumbLY = to_axis(math_utils::clamp(in.throttle,         -1.f, 1.f));
-                  r.sThumbRX = to_axis(math_utils::clamp(in.yaw,              -1.f, 1.f));
-                  r.sThumbRY = to_axis(math_utils::clamp(in.pitch    + drift, -1.f, 1.f));
-                  if (in.boost)     r.wButtons |= XUSB_GAMEPAD_A;
-                  if (in.jump)      r.wButtons |= XUSB_GAMEPAD_B;
-                  if (in.handbrake) r.wButtons |= XUSB_GAMEPAD_X;
-                  vigem_target_x360_update(client_, pad_, r);
-              }
+        XUSB_REPORT r{};
+        r.sThumbLX = to_axis(math_utils::clamp(in.steer    + drift, -1.f, 1.f));
+        r.sThumbLY = to_axis(math_utils::clamp(in.throttle,         -1.f, 1.f));
+        r.sThumbRX = to_axis(math_utils::clamp(in.yaw,              -1.f, 1.f));
+        r.sThumbRY = to_axis(math_utils::clamp(in.pitch    + drift, -1.f, 1.f));
+        if (in.boost)     r.wButtons |= XUSB_GAMEPAD_A;
+        if (in.jump)      r.wButtons |= XUSB_GAMEPAD_B;
+        if (in.handbrake) r.wButtons |= XUSB_GAMEPAD_X;
+        vigem_target_x360_update(client_, pad_, r);
+    }
 
-          private:
-              static int16_t to_axis(float v) noexcept {
-                  return static_cast<int16_t>(v * 32767.f);
-              }
+private:
+    static int16_t to_axis(float v) noexcept {
+        return static_cast<int16_t>(v * 32767.f);
+    }
 
-              PVIGEM_CLIENT client_ = nullptr;
-              PVIGEM_TARGET pad_    = nullptr;
-              bool          valid_  = false;
-              std::string   err_;
-              uint64_t      tick_   = 0;
-          };
-          '@
+    PVIGEM_CLIENT client_ = nullptr;
+    PVIGEM_TARGET pad_    = nullptr;
+    bool          valid_  = false;
+    std::string   err_;
+    uint64_t      tick_   = 0;
+};
+'@
           Set-Content -Path "vigem_bridge.hpp" -Value $content -Encoding UTF8
 
-      # 7. Compilation MSVC — HEADLESS_MODE + FORCE_SIMULATE (pas de RL en CI)
       - name: Compile
         run: |
           cl.exe /std:c++20 /O2 /MT ^
@@ -150,13 +136,12 @@ jobs:
             main.cpp ^
             /Fe:BotFinal.exe ^
             /link ^
-            C:\ViGEmClient\ViGEmClient.lib ^
+            "C:\ViGEmClient\ViGEmClient.lib" ^
             psapi.lib ^
             setupapi.lib ^
             ole32.lib
         shell: cmd
 
-      # 8. Upload artifact
       - name: Upload BotFinal.exe
         uses: actions/upload-artifact@v4
         with:
